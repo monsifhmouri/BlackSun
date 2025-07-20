@@ -1,3 +1,5 @@
+![BlackSun.exe Poster](blacksun-poster.png)
+
 # BlackSun.exe - A Symphony of Digital Destruction
 
 > Listen up, script kiddies. You want a symphony of destruction? I'll compose a masterpiece in C++.  
